@@ -270,6 +270,22 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
                   (k.typical_patterns.some(p => aiPattern.toLowerCase().includes(p.toLowerCase().split(' ')[0])) ? 0.45 : 0.1),
     })).sort((a, b) => b.confidence - a.confidence).slice(0, 5);
 
+    // Similar textiles — broader matches not in top results
+    const matchedIds = new Set(enriched.map(t => String(t._id)));
+    const allTextiles = await Textile.find({}).lean();
+    const similar = allTextiles
+      .filter(t => !matchedIds.has(String(t._id)))
+      .map(t => ({
+        ...t,
+        id: t._id,
+        match_score: scoreTextile(t, aiColors, 'Unknown', [], null, null),
+        in_stock: allStock.some(s => String(s.textile_id) === String(t._id)),
+        total_stock: allStock.filter(s => String(s.textile_id) === String(t._id)).reduce((sum, s) => sum + (s.quantity_meters || 0), 0),
+      }))
+      .filter(t => t.match_score > 0)
+      .sort((a, b) => b.match_score - a.match_score)
+      .slice(0, 8);
+
     // Log scan
     await ScanHistory.create({
       image_path: `/uploads/scans/${req.file.filename}`,
@@ -297,12 +313,95 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
         image_url: `/uploads/scans/${req.file.filename}`,
       },
       matches: enriched,
+      similar,
       knowledge_matches: kbMatches,
       total_matches: enriched.length,
+      total_similar: similar.length,
     });
   } catch (err) {
     console.error('Scan error:', err);
     res.status(500).json({ error: 'Scan failed: ' + err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /api/scan/filter-search — Re-search with user-modified filters
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.post('/filter-search', async (req, res) => {
+  try {
+    const { colors = [], pattern, keywords = [], material, style, textile_type, add_colors = [] } = req.body;
+
+    // Merge original + user-added colors
+    const allColors = [...new Set([...colors, ...add_colors].map(c => c.toLowerCase()))];
+
+    // Build query from active filters
+    const query = buildSearchQuery(allColors, pattern, keywords, material, {});
+
+    // Also add style/textile_type to query
+    if (style) {
+      query.$or = query.$or || [];
+      query.$or.push({ description: { $regex: style.split(' ')[0], $options: 'i' } });
+    }
+    if (textile_type && textile_type !== 'Generic') {
+      query.$or = query.$or || [];
+      query.$or.push({ name: { $regex: textile_type, $options: 'i' } });
+      query.$or.push({ description: { $regex: textile_type, $options: 'i' } });
+    }
+
+    const candidates = await Textile.find(Object.keys(query).length ? query : {}).lean();
+
+    const scored = candidates.map(t => ({
+      ...t,
+      id: t._id,
+      match_score: scoreTextile(t, allColors, pattern || 'Unknown', keywords, material, null),
+    }))
+    .filter(t => t.match_score > 0)
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, 15);
+
+    // Enrich with stock
+    const allStock = await Stock.find({ is_available: 1 }).lean();
+    const enriched = scored.map(t => ({
+      ...t,
+      in_stock: allStock.some(s => String(s.textile_id) === String(t._id)),
+      total_stock: allStock.filter(s => String(s.textile_id) === String(t._id)).reduce((sum, s) => sum + (s.quantity_meters || 0), 0),
+      supplier_count: new Set(allStock.filter(s => String(s.textile_id) === String(t._id)).map(s => String(s.supplier_id))).size,
+    }));
+
+    // Similar textiles — broader search with relaxed criteria (just colors/material)
+    const similarQuery = { $or: [] };
+    allColors.forEach(c => {
+      similarQuery.$or.push({ primary_color: { $regex: c, $options: 'i' } });
+    });
+    if (material) similarQuery.$or.push({ material: { $regex: material, $options: 'i' } });
+    if (similarQuery.$or.length === 0) delete similarQuery.$or;
+
+    const matchedIds = new Set(enriched.map(t => String(t._id)));
+    const similarCandidates = await Textile.find(Object.keys(similarQuery).length ? similarQuery : {}).lean();
+    const similar = similarCandidates
+      .filter(t => !matchedIds.has(String(t._id)))
+      .map(t => ({
+        ...t,
+        id: t._id,
+        match_score: scoreTextile(t, allColors, 'Unknown', [], null, null),
+        in_stock: allStock.some(s => String(s.textile_id) === String(t._id)),
+        total_stock: allStock.filter(s => String(s.textile_id) === String(t._id)).reduce((sum, s) => sum + (s.quantity_meters || 0), 0),
+      }))
+      .filter(t => t.match_score > 0)
+      .sort((a, b) => b.match_score - a.match_score)
+      .slice(0, 8);
+
+    res.json({
+      matches: enriched,
+      similar,
+      total_matches: enriched.length,
+      total_similar: similar.length,
+      filters_applied: { colors: allColors, pattern, keywords, material, style, textile_type },
+    });
+  } catch (err) {
+    console.error('Filter search error:', err);
+    res.status(500).json({ error: 'Filter search failed: ' + err.message });
   }
 });
 
