@@ -44,7 +44,12 @@ async function analyzeImageWithGemini(imagePath, mimeType) {
   "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"],
   "origin_guess": "likely origin region if identifiable (e.g., Varanasi, Kanchipuram, Jaipur, Lucknow, or Unknown)"
 }
-Return ONLY the JSON, no markdown, no explanation. Colors should be simple names.`;
+
+CRITICAL INSTRUCTIONS:
+- Focus ONLY on the fabric/textile visible in the image. IGNORE any background, hands, fingers, surfaces, tables, mannequins, or non-fabric elements entirely.
+- For colors, list ONLY the colors of the FABRIC itself (not background or surroundings). Always return at least 2-3 colors.
+- If the image shows fabric being held or placed on a surface, analyze ONLY the fabric portion.
+- Return ONLY valid JSON, no markdown, no explanation. Colors should be simple names.`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
