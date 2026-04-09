@@ -66,9 +66,9 @@ const db = require('./database');
 (async () => {
   try {
     await db.connect();
-    app.listen(PORT, () => {
-      console.log(`\n🧵 RJE Textile API Server running on http://localhost:${PORT}`);
-      console.log(`📡 API endpoints ready at http://localhost:${PORT}/api\n`);
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`\n🧵 RJE Textile API Server running on port ${PORT}`);
+      console.log(`📡 API endpoints ready at http://0.0.0.0:${PORT}/api\n`);
     });
   } catch (err) {
     console.error('❌ Failed to connect to MongoDB:', err.message);
