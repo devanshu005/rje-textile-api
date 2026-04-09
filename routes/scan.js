@@ -330,13 +330,14 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
 router.post('/filter-search', async (req, res) => {
   try {
-    const { colors = [], pattern, keywords = [], material, style, textile_type, add_colors = [] } = req.body;
+    const { colors = [], pattern, keywords = [], material, style, textile_type,
+            add_colors = [], context_search, custom_pattern, design_type } = req.body;
 
     // Merge original + user-added colors
     const allColors = [...new Set([...colors, ...add_colors].map(c => c.toLowerCase()))];
 
     // Build query from active filters
-    const query = buildSearchQuery(allColors, pattern, keywords, material, {});
+    const query = buildSearchQuery(allColors, pattern || custom_pattern, keywords, material, {});
 
     // Also add style/textile_type to query
     if (style) {
@@ -347,6 +348,35 @@ router.post('/filter-search', async (req, res) => {
       query.$or = query.$or || [];
       query.$or.push({ name: { $regex: textile_type, $options: 'i' } });
       query.$or.push({ description: { $regex: textile_type, $options: 'i' } });
+    }
+
+    // Context search — free-text search across all fields
+    if (context_search && context_search.trim()) {
+      const words = context_search.trim().split(/\s+/).filter(w => w.length > 2);
+      query.$or = query.$or || [];
+      words.forEach(w => {
+        query.$or.push({ name: { $regex: w, $options: 'i' } });
+        query.$or.push({ description: { $regex: w, $options: 'i' } });
+        query.$or.push({ tags: { $regex: w, $options: 'i' } });
+        query.$or.push({ material: { $regex: w, $options: 'i' } });
+        query.$or.push({ pattern: { $regex: w, $options: 'i' } });
+        query.$or.push({ primary_color: { $regex: w, $options: 'i' } });
+      });
+    }
+
+    // Design type — shape/drawing category
+    if (design_type) {
+      query.$or = query.$or || [];
+      query.$or.push({ pattern: { $regex: design_type, $options: 'i' } });
+      query.$or.push({ description: { $regex: design_type, $options: 'i' } });
+      query.$or.push({ tags: { $regex: design_type, $options: 'i' } });
+    }
+
+    // Custom pattern override
+    if (custom_pattern && custom_pattern !== pattern) {
+      query.$or = query.$or || [];
+      query.$or.push({ pattern: { $regex: custom_pattern, $options: 'i' } });
+      query.$or.push({ description: { $regex: custom_pattern, $options: 'i' } });
     }
 
     const candidates = await Textile.find(Object.keys(query).length ? query : {}).lean();

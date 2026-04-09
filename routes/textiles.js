@@ -16,75 +16,147 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, fileFilter: (req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)), limits: { fileSize: 10 * 1024 * 1024 } });
 
-function rgbToColorName(r, g, b) {
-  const colors = {
-    red: [255, 0, 0], blue: [0, 0, 255], green: [0, 128, 0], yellow: [255, 255, 0],
-    orange: [255, 165, 0], purple: [128, 0, 128], pink: [255, 192, 203], white: [255, 255, 255],
-    black: [0, 0, 0], brown: [139, 69, 19], grey: [128, 128, 128], beige: [245, 245, 220],
-    maroon: [128, 0, 0], navy: [0, 0, 128], teal: [0, 128, 128], gold: [255, 215, 0],
-    coral: [255, 127, 80], cream: [255, 253, 208], indigo: [75, 0, 130],
-    mustard: [255, 219, 88], wine: [114, 47, 55], ivory: [255, 255, 240],
-    honey: [235, 177, 52], pastel: [190, 190, 220],
-  };
-  let closest = 'white', minD = Infinity;
-  for (const [name, [cr, cg, cb]] of Object.entries(colors)) {
-    const d = Math.sqrt((r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2);
-    if (d < minD) { minD = d; closest = name; }
+// ═══════════════════════════════════════════════════════════════════════════
+// GEMINI AI — Full textile analysis for add-textile flow
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function analyzeImageWithGemini(imagePath, mimeType) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const imageData = fs.readFileSync(imagePath);
+    const base64Image = imageData.toString('base64');
+
+    const prompt = `You are an expert textile analyst. Analyze this fabric/textile image and return a JSON object with ALL these fields:
+{
+  "description": "2-3 sentence description of the textile/fabric including its visual appearance, weave, and any design elements",
+  "primary_color": "the dominant color name (e.g., red, blue, gold, navy, maroon, cream)",
+  "secondary_colors": "other visible colors comma-separated (e.g., gold, white, green)",
+  "colors": ["color1", "color2", "color3"],
+  "pattern": "the pattern type (e.g., Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid, Polka Dots, Herringbone)",
+  "material_guess": "likely material (e.g., Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin, Denim, Rayon, Blended)",
+  "weave_type": "weave type if visible (e.g., Plain Weave, Twill, Satin Weave, Dobby, Jacquard, Basket Weave)",
+  "style": "the style (e.g., Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven)",
+  "textile_type": "specific textile type if recognizable (e.g., Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, or Generic)",
+  "suggested_name": "a descriptive product name for this textile (e.g., Royal Blue Banarasi Silk Brocade)",
+  "tags": "comma-separated tags (e.g., festive, bridal, premium, casual, summer, lightweight)",
+  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"],
+  "origin_guess": "likely origin region if identifiable (e.g., Varanasi, Kanchipuram, Jaipur, Lucknow, or Unknown)"
+}
+Return ONLY the JSON, no markdown, no explanation. Colors should be simple names.`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
+            ]
+          }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 600 },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      console.error('Gemini API error:', response.status);
+      return null;
+    }
+
+    const result = await response.json();
+    const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.error('Gemini analyze failed:', err.message);
+    return null;
   }
-  return closest;
 }
 
-async function detectPattern(imagePath) {
+// Fallback: basic sharp detection
+async function basicDetect(imagePath) {
   try {
     const sharp = require('sharp');
-    const { channels } = await sharp(imagePath).stats();
+    const { dominant, channels } = await sharp(imagePath).stats();
+    const colors = {
+      red: [255,0,0], blue: [0,0,255], green: [0,128,0], yellow: [255,255,0],
+      orange: [255,165,0], purple: [128,0,128], pink: [255,192,203], white: [255,255,255],
+      black: [0,0,0], brown: [139,69,19], grey: [128,128,128], beige: [245,245,220],
+      maroon: [128,0,0], navy: [0,0,128], teal: [0,128,128], gold: [255,215,0],
+      coral: [255,127,80], cream: [255,253,208],
+    };
+    let closest = 'white', minD = Infinity;
+    for (const [name, [cr, cg, cb]] of Object.entries(colors)) {
+      const d = Math.sqrt((dominant.r-cr)**2 + (dominant.g-cg)**2 + (dominant.b-cb)**2);
+      if (d < minD) { minD = d; closest = name; }
+    }
     const avgStdDev = channels.reduce((s, c) => s + c.stdev, 0) / channels.length;
-    if (avgStdDev < 15) return 'Plain';
-    if (avgStdDev < 30) return 'Subtle';
-    if (avgStdDev < 50) return 'Stripes';
-    if (avgStdDev < 70) return 'Geometric';
-    return 'Floral';
-  } catch { return 'Unknown'; }
+    let pattern = 'Plain';
+    if (avgStdDev >= 70) pattern = 'Floral';
+    else if (avgStdDev >= 50) pattern = 'Geometric';
+    else if (avgStdDev >= 30) pattern = 'Stripes';
+    else if (avgStdDev >= 15) pattern = 'Subtle';
+    return { primary_color: closest, pattern, dominant_rgb: dominant };
+  } catch { return { primary_color: 'white', pattern: 'Unknown', dominant_rgb: { r: 128, g: 128, b: 128 } }; }
 }
 
-// Match scanned image against knowledge base
-async function matchKnowledge(detectedColor, detectedPattern) {
-  const kb = await KnowledgeBase.find({ is_active: true }).lean();
-  const matches = kb.filter(k => {
-    const colorMatch = k.typical_colors.some(c => c.toLowerCase().includes(detectedColor) || detectedColor.includes(c.toLowerCase()));
-    const patternMatch = k.typical_patterns.some(p => p.toLowerCase().includes(detectedPattern.toLowerCase()));
-    return colorMatch || patternMatch;
-  }).map(k => ({
-    textile_type: k.textile_type,
-    origin: k.origin,
-    material_category: k.material_category,
-    confidence: (k.typical_colors.some(c => c.toLowerCase().includes(detectedColor)) ? 0.4 : 0) +
-                (k.typical_patterns.some(p => p.toLowerCase().includes(detectedPattern.toLowerCase())) ? 0.4 : 0.1),
-    identifying_features: k.identifying_features,
-  }));
-  return matches.sort((a, b) => b.confidence - a.confidence).slice(0, 5);
-}
-
-// POST /api/textiles/analyze-image
+// POST /api/textiles/analyze-image — now uses Gemini AI
 router.post('/analyze-image', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
   try {
-    const sharp = require('sharp');
-    const { dominant } = await sharp(req.file.path).stats();
-    const detectedColor = rgbToColorName(dominant.r, dominant.g, dominant.b);
-    const detectedPattern = await detectPattern(req.file.path);
+    const mimeType = req.file.mimetype || 'image/jpeg';
 
-    const knowledgeMatches = await matchKnowledge(detectedColor, detectedPattern);
+    // Run Gemini + basic detection in parallel
+    const [gemini, basic] = await Promise.all([
+      analyzeImageWithGemini(req.file.path, mimeType),
+      basicDetect(req.file.path),
+    ]);
 
+    const detected = {
+      ai_powered: !!gemini,
+      primary_color: gemini?.primary_color || basic.primary_color,
+      secondary_colors: gemini?.secondary_colors || '',
+      pattern: gemini?.pattern || basic.pattern,
+      material_guess: gemini?.material_guess || null,
+      weave_type: gemini?.weave_type || null,
+      style: gemini?.style || null,
+      textile_type: gemini?.textile_type || null,
+      description: gemini?.description || null,
+      suggested_name: gemini?.suggested_name || null,
+      tags: gemini?.tags || '',
+      keywords: gemini?.keywords || [],
+      origin_guess: gemini?.origin_guess || null,
+      colors: gemini?.colors || [basic.primary_color],
+      dominant_rgb: basic.dominant_rgb,
+    };
+
+    // Get recommendations from existing DB
     const textiles = await Textile.find().lean();
     const patterns = [...new Set(textiles.map(t => t.pattern).filter(Boolean))].sort();
     const materials = [...new Set(textiles.map(t => t.material).filter(Boolean))].sort();
     const colors = [...new Set(textiles.map(t => t.primary_color).filter(Boolean))].sort();
 
+    // Knowledge base matching
+    const kb = await KnowledgeBase.find({ is_active: true }).lean();
+    const kbMatches = kb.filter(k => {
+      const colorMatch = k.typical_colors.some(c => (detected.primary_color || '').toLowerCase().includes(c.toLowerCase()));
+      const patternMatch = k.typical_patterns.some(p => (detected.pattern || '').toLowerCase().includes(p.toLowerCase()));
+      return colorMatch || patternMatch;
+    }).map(k => ({
+      textile_type: k.textile_type, origin: k.origin, material_category: k.material_category,
+      identifying_features: k.identifying_features,
+    })).slice(0, 5);
+
     res.json({
-      detected: { primary_color: detectedColor, dominant_rgb: { r: dominant.r, g: dominant.g, b: dominant.b }, pattern: detectedPattern },
+      detected,
       image_filename: req.file.filename,
-      knowledge_matches: knowledgeMatches,
+      knowledge_matches: kbMatches,
       recommendations: {
         patterns: patterns.length > 0 ? patterns : ['Plain', 'Stripes', 'Checks', 'Floral', 'Geometric', 'Abstract', 'Paisley'],
         materials: materials.length > 0 ? materials : ['Cotton', 'Silk', 'Polyester', 'Wool', 'Linen', 'Blended'],
