@@ -15,224 +15,238 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage, fileFilter: (req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// GEMINI AI VISION — Analyzes textile images for colors, patterns, style
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function analyzeWithGemini(imagePath, mimeType) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const imageData = fs.readFileSync(imagePath);
+    const base64Image = imageData.toString('base64');
+
+    const prompt = `You are an expert textile analyst. Analyze this fabric/textile image and return a JSON object with these fields:
+{
+  "description": "2-3 sentence description of the textile/fabric including style, weave, and any design elements",
+  "colors": ["color1", "color2", "color3"],
+  "pattern": "the pattern type (e.g., Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid)",
+  "style": "the style (e.g., Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven)",
+  "material_guess": "likely material (e.g., Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin)",
+  "textile_type": "the type of textile if recognizable (e.g., Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, or Generic)",
+  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]
+}
+Return ONLY the JSON, no markdown, no explanation. Colors should be simple names like red, blue, gold, navy, maroon, green, cream, beige, pink, etc.`;
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType || 'image/jpeg', data: base64Image } }
+            ]
+          }],
+          generationConfig: { temperature: 0.2, maxOutputTokens: 500 },
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      console.error('Gemini API error:', response.status, await response.text());
+      return null;
+    }
+
+    const result = await response.json();
+    const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    // Extract JSON from response (handles markdown code blocks too)
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    console.log('Gemini analysis:', parsed);
+    return parsed;
+  } catch (err) {
+    console.error('Gemini analysis failed:', err.message);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FALLBACK: Color + pattern detection using sharp (no API key needed)
+// ═══════════════════════════════════════════════════════════════════════════
+
 const COLOR_MAP = {
-  red:     [255, 0, 0],     crimson:  [220, 20, 60],   maroon:  [128, 0, 0],
-  pink:    [255, 105, 180], coral:    [255, 127, 80],   orange:  [255, 165, 0],
-  yellow:  [255, 255, 0],   gold:     [255, 215, 0],    mustard: [255, 219, 88],
-  green:   [0, 128, 0],     olive:    [128, 128, 0],    teal:    [0, 128, 128],
-  cyan:    [0, 188, 188],   blue:     [30, 80, 200],    navy:    [0, 0, 128],
-  indigo:  [75, 0, 130],    purple:   [128, 0, 128],    wine:    [114, 47, 55],
-  white:   [255, 255, 255], ivory:    [255, 255, 240],  cream:   [255, 253, 208],
-  beige:   [245, 245, 220], honey:    [235, 177, 52],   khaki:   [189, 183, 107],
-  grey:    [128, 128, 128], silver:   [192, 192, 192],  charcoal:[54, 69, 79],
-  black:   [0, 0, 0],       brown:    [139, 69, 19],    tan:     [210, 180, 140],
+  red: [255,0,0], crimson: [220,20,60], maroon: [128,0,0],
+  pink: [255,105,180], coral: [255,127,80], orange: [255,165,0],
+  yellow: [255,255,0], gold: [255,215,0], mustard: [255,219,88],
+  green: [0,128,0], olive: [128,128,0], teal: [0,128,128],
+  blue: [30,80,200], navy: [0,0,128], indigo: [75,0,130],
+  purple: [128,0,128], wine: [114,47,55], white: [255,255,255],
+  ivory: [255,255,240], cream: [255,253,208], beige: [245,245,220],
+  grey: [128,128,128], silver: [192,192,192], charcoal: [54,69,79],
+  black: [0,0,0], brown: [139,69,19], tan: [210,180,140],
 };
 
 function rgbToColorName(r, g, b) {
   let closest = 'white', minD = Infinity;
   for (const [name, [cr, cg, cb]] of Object.entries(COLOR_MAP)) {
-    // Weighted distance — human eye is more sensitive to green
-    const d = Math.sqrt(
-      2 * (r - cr) ** 2 +
-      4 * (g - cg) ** 2 +
-      3 * (b - cb) ** 2
-    );
+    const d = Math.sqrt(2*(r-cr)**2 + 4*(g-cg)**2 + 3*(b-cb)**2);
     if (d < minD) { minD = d; closest = name; }
   }
   return closest;
 }
 
-// Convert RGB to HSL for better color analysis
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s, l = (max + min) / 2;
-  if (max === min) { h = s = 0; }
-  else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      default: h = ((r - g) / d + 4) / 6;
-    }
-  }
-  return [h * 360, s * 100, l * 100];
-}
-
-// Extract top N distinct colors from image using grid sampling
 async function extractTopColors(imagePath, topN = 3) {
   const sharp = require('sharp');
-  // Resize to small grid for fast processing
-  const GRID = 20;
-  const { data, info } = await sharp(imagePath)
-    .resize(GRID, GRID, { fit: 'fill' })
-    .removeAlpha()
-    .raw()
+  const { data } = await sharp(imagePath)
+    .resize(20, 20, { fit: 'fill' }).removeAlpha().raw()
     .toBuffer({ resolveWithObject: true });
-
-  // Collect all pixel colors
-  const pixels = [];
-  for (let i = 0; i < data.length; i += 3) {
-    const r = data[i], g = data[i + 1], b = data[i + 2];
-    // Skip near-white backgrounds and very dark pixels
-    const [, s, l] = rgbToHsl(r, g, b);
-    pixels.push({ r, g, b, s, l });
-  }
-
-  // k-means style: bucket pixels into named colors and count
   const buckets = {};
-  for (const px of pixels) {
-    const name = rgbToColorName(px.r, px.g, px.b);
-    if (!buckets[name]) buckets[name] = { count: 0, rSum: 0, gSum: 0, bSum: 0 };
-    buckets[name].count++;
-    buckets[name].rSum += px.r;
-    buckets[name].gSum += px.g;
-    buckets[name].bSum += px.b;
+  for (let i = 0; i < data.length; i += 3) {
+    const name = rgbToColorName(data[i], data[i+1], data[i+2]);
+    if (!buckets[name]) buckets[name] = { count: 0, rS: 0, gS: 0, bS: 0 };
+    buckets[name].count++; buckets[name].rS += data[i]; buckets[name].gS += data[i+1]; buckets[name].bS += data[i+2];
   }
-
-  // Sort by frequency and return top N with their average RGB
-  const sorted = Object.entries(buckets)
+  const total = data.length / 3;
+  return Object.entries(buckets)
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, topN)
-    .map(([name, v]) => ({
-      name,
-      r: Math.round(v.rSum / v.count),
-      g: Math.round(v.gSum / v.count),
-      b: Math.round(v.bSum / v.count),
-      percentage: Math.round((v.count / pixels.length) * 100),
-    }));
-
-  return sorted;
+    .map(([name, v]) => ({ name, r: Math.round(v.rS/v.count), g: Math.round(v.gS/v.count), b: Math.round(v.bS/v.count), percentage: Math.round(v.count/total*100) }));
 }
 
-// Detect pattern using directional variance analysis
-async function detectPattern(imagePath) {
-  try {
-    const sharp = require('sharp');
-    const SAMPLE = 64;
-    const { data } = await sharp(imagePath)
-      .resize(SAMPLE, SAMPLE, { fit: 'fill' })
-      .greyscale()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+// ═══════════════════════════════════════════════════════════════════════════
+// SMART MATCHING — Uses AI context + colors + pattern to find best textiles
+// ═══════════════════════════════════════════════════════════════════════════
 
-    // Compute horizontal row variance (detects horizontal stripes)
-    let hVar = 0;
-    for (let y = 0; y < SAMPLE; y++) {
-      let rowSum = 0, rowSumSq = 0;
-      for (let x = 0; x < SAMPLE; x++) {
-        const v = data[y * SAMPLE + x];
-        rowSum += v; rowSumSq += v * v;
-      }
-      const mean = rowSum / SAMPLE;
-      hVar += rowSumSq / SAMPLE - mean * mean;
-    }
-    hVar /= SAMPLE;
+function buildSearchQuery(colors, pattern, keywords, material, hints) {
+  const orConditions = [];
+  // Color matches
+  colors.forEach(c => {
+    orConditions.push({ primary_color: { $regex: c, $options: 'i' } });
+    orConditions.push({ description: { $regex: c, $options: 'i' } });
+  });
+  // Pattern match
+  if (pattern && pattern !== 'Unknown') {
+    orConditions.push({ pattern: { $regex: pattern.split(' ')[0], $options: 'i' } });
+    orConditions.push({ description: { $regex: pattern.split(' ')[0], $options: 'i' } });
+  }
+  // AI keywords
+  if (keywords?.length) {
+    keywords.forEach(kw => {
+      orConditions.push({ name: { $regex: kw, $options: 'i' } });
+      orConditions.push({ description: { $regex: kw, $options: 'i' } });
+      orConditions.push({ material: { $regex: kw, $options: 'i' } });
+    });
+  }
+  // Material
+  if (material) {
+    orConditions.push({ material: { $regex: material, $options: 'i' } });
+  }
+  // User hints
+  if (hints?.pattern) orConditions.push({ pattern: { $regex: hints.pattern, $options: 'i' } });
+  if (hints?.material) orConditions.push({ material: { $regex: hints.material, $options: 'i' } });
 
-    // Compute vertical column variance (detects vertical stripes / checks)
-    let vVar = 0;
-    for (let x = 0; x < SAMPLE; x++) {
-      let colSum = 0, colSumSq = 0;
-      for (let y = 0; y < SAMPLE; y++) {
-        const v = data[y * SAMPLE + x];
-        colSum += v; colSumSq += v * v;
-      }
-      const mean = colSum / SAMPLE;
-      vVar += colSumSq / SAMPLE - mean * mean;
-    }
-    vVar /= SAMPLE;
-
-    const avgVar = (hVar + vVar) / 2;
-    const hvRatio = Math.abs(hVar - vVar) / (avgVar + 1);
-
-    if (avgVar < 100) return 'Plain';
-    if (avgVar < 300) {
-      if (hvRatio > 0.5) return hVar > vVar ? 'Horizontal Stripes' : 'Vertical Stripes';
-      return 'Subtle';
-    }
-    if (avgVar < 700) {
-      if (hvRatio > 0.4) return 'Stripes';
-      return 'Checks';
-    }
-    if (avgVar < 1400) return 'Geometric';
-    return 'Floral';
-  } catch { return 'Unknown'; }
+  return orConditions.length > 0 ? { $or: orConditions } : {};
 }
 
-// POST /api/scan/analyze
+function scoreTextile(textile, colors, pattern, keywords, material, aiDescription) {
+  let score = 0;
+  const tColor = (textile.primary_color || '').toLowerCase();
+  const tPattern = (textile.pattern || '').toLowerCase();
+  const tMaterial = (textile.material || '').toLowerCase();
+  const tName = (textile.name || '').toLowerCase();
+  const tDesc = (textile.description || '').toLowerCase();
+
+  // Color scoring: primary=35, secondary=20, tertiary=10
+  colors.forEach((c, i) => {
+    const w = i === 0 ? 35 : i === 1 ? 20 : 10;
+    if (tColor.includes(c) || tDesc.includes(c)) score += w;
+  });
+
+  // Pattern scoring
+  if (pattern && pattern !== 'Unknown') {
+    const pWords = pattern.toLowerCase().split(/[\s-]+/);
+    pWords.forEach(pw => {
+      if (tPattern.includes(pw)) score += 25;
+      if (tDesc.includes(pw)) score += 10;
+    });
+  }
+
+  // AI keywords scoring — context matching
+  if (keywords?.length) {
+    keywords.forEach(kw => {
+      const kwl = kw.toLowerCase();
+      if (tName.includes(kwl)) score += 15;
+      if (tDesc.includes(kwl)) score += 10;
+      if (tMaterial.includes(kwl)) score += 10;
+      if (tPattern.includes(kwl)) score += 10;
+    });
+  }
+
+  // Material match
+  if (material && tMaterial.includes(material.toLowerCase())) score += 20;
+
+  // AI description context matching
+  if (aiDescription) {
+    const descWords = aiDescription.toLowerCase().split(/\s+/);
+    const nameWords = tName.split(/[\s-]+/);
+    nameWords.forEach(nw => {
+      if (nw.length > 3 && descWords.includes(nw)) score += 8;
+    });
+  }
+
+  return Math.min(score, 100);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /api/scan/analyze — Main scan endpoint
+// ═══════════════════════════════════════════════════════════════════════════
+
 router.post('/analyze', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
 
   try {
-    // Extract top 3 colors + detect pattern
-    const [topColors, detectedPattern] = await Promise.all([
-      extractTopColors(req.file.path, 3),
-      detectPattern(req.file.path),
-    ]);
-
-    const primaryColor = topColors[0]?.name || 'white';
-    const allColorNames = topColors.map(c => c.name);
-
+    const mimeType = req.file.mimetype || 'image/jpeg';
     const { hint_pattern, hint_material } = req.body;
 
-    // Search textiles matching ANY of the top 3 colors, pattern, or hints
-    const colorConditions = allColorNames.map(c => ({
-      primary_color: { $regex: c, $options: 'i' }
-    }));
-    const orConditions = [
-      ...colorConditions,
-      { secondary_colors: { $in: allColorNames.map(c => new RegExp(c, 'i')) } },
-    ];
-    if (hint_pattern) orConditions.push({ pattern: { $regex: hint_pattern, $options: 'i' } });
-    if (hint_material) orConditions.push({ material: { $regex: hint_material, $options: 'i' } });
-
-    // Also get ALL textiles to score against pattern
-    const [colorMatches, allTextiles] = await Promise.all([
-      Textile.find({ $or: orConditions }).lean(),
-      Textile.find({}).lean(),
+    // Run Gemini AI + color extraction in parallel
+    const [geminiResult, topColors] = await Promise.all([
+      analyzeWithGemini(req.file.path, mimeType),
+      extractTopColors(req.file.path, 3),
     ]);
 
-    // Pattern-only matches (not already in colorMatches)
-    const colorMatchIds = new Set(colorMatches.map(t => String(t._id)));
-    const patternStr = detectedPattern.toLowerCase();
-    const patternMatches = allTextiles.filter(t =>
-      !colorMatchIds.has(String(t._id)) &&
-      t.pattern && t.pattern.toLowerCase().includes(patternStr)
-    );
+    // Use Gemini results if available, else fall back to pixel analysis
+    const aiColors = geminiResult?.colors || topColors.map(c => c.name);
+    const aiPattern = geminiResult?.pattern || 'Unknown';
+    const aiKeywords = geminiResult?.keywords || [];
+    const aiMaterial = geminiResult?.material_guess || null;
+    const aiDescription = geminiResult?.description || null;
+    const aiStyle = geminiResult?.style || null;
+    const aiTextileType = geminiResult?.textile_type || null;
 
-    const allMatches = [...colorMatches, ...patternMatches];
+    // Search textiles using all AI context
+    const query = buildSearchQuery(aiColors, aiPattern, aiKeywords, aiMaterial, {
+      pattern: hint_pattern, material: hint_material
+    });
 
-    // Advanced scoring
-    const scored = allMatches.map(t => {
-      let score = 0;
-      const tColor = (t.primary_color || '').toLowerCase();
-      const tPattern = (t.pattern || '').toLowerCase();
-      const tMaterial = (t.material || '').toLowerCase();
+    const candidates = await Textile.find(query).lean();
 
-      // Primary color match — weighted by how dominant it is in the image
-      topColors.forEach((c, idx) => {
-        const weight = idx === 0 ? 40 : idx === 1 ? 20 : 10;
-        if (tColor === c.name || tColor.includes(c.name)) score += weight;
-      });
-
-      // Pattern match
-      if (detectedPattern !== 'Unknown') {
-        const patWords = patternStr.split(' ');
-        if (patWords.some(w => tPattern.includes(w))) score += 25;
-      }
-
-      // User hint boosts
-      if (hint_pattern && tPattern.includes(hint_pattern.toLowerCase())) score += 20;
-      if (hint_material && tMaterial.includes(hint_material.toLowerCase())) score += 15;
-
-      return { ...t, id: t._id, match_score: Math.min(score, 100) };
-    })
+    // Score all candidates
+    const scored = candidates.map(t => ({
+      ...t,
+      id: t._id,
+      match_score: scoreTextile(t, aiColors, aiPattern, aiKeywords, aiMaterial, aiDescription),
+    }))
     .filter(t => t.match_score > 0)
     .sort((a, b) => b.match_score - a.match_score)
     .slice(0, 10);
 
-    // Enrich with stock data
+    // Enrich with stock
     const allStock = await Stock.find({ is_available: 1 }).lean();
     const enriched = scored.map(t => ({
       ...t,
@@ -241,31 +255,27 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
       supplier_count: new Set(allStock.filter(s => String(s.textile_id) === String(t._id)).map(s => String(s.supplier_id))).size,
     }));
 
-    // Knowledge base matching against all top colors
+    // Knowledge base
     const kb = await KnowledgeBase.find({ is_active: true }).lean();
     const kbMatches = kb.filter(k => {
-      const colorMatch = k.typical_colors.some(c =>
-        allColorNames.some(detected => c.toLowerCase().includes(detected))
-      );
-      const patternMatch = k.typical_patterns.some(p =>
-        p.toLowerCase().includes(patternStr.split(' ')[0])
-      );
+      const colorMatch = k.typical_colors.some(c => aiColors.some(d => c.toLowerCase().includes(d.toLowerCase())));
+      const patternMatch = k.typical_patterns.some(p => aiPattern.toLowerCase().includes(p.toLowerCase().split(' ')[0]));
       return colorMatch || patternMatch;
     }).map(k => ({
       textile_type: k.textile_type,
       origin: k.origin,
       material_category: k.material_category,
       identifying_features: k.identifying_features,
-      confidence: (k.typical_colors.some(c => allColorNames.some(d => c.toLowerCase().includes(d))) ? 0.45 : 0) +
-                  (k.typical_patterns.some(p => p.toLowerCase().includes(patternStr.split(' ')[0])) ? 0.45 : 0.1),
+      confidence: (k.typical_colors.some(c => aiColors.some(d => c.toLowerCase().includes(d.toLowerCase()))) ? 0.45 : 0) +
+                  (k.typical_patterns.some(p => aiPattern.toLowerCase().includes(p.toLowerCase().split(' ')[0])) ? 0.45 : 0.1),
     })).sort((a, b) => b.confidence - a.confidence).slice(0, 5);
 
     // Log scan
     await ScanHistory.create({
       image_path: `/uploads/scans/${req.file.filename}`,
-      detected_color: primaryColor,
-      detected_pattern: detectedPattern,
-      dominant_rgb: `${topColors[0]?.r},${topColors[0]?.g},${topColors[0]?.b}`,
+      detected_color: aiColors[0] || 'unknown',
+      detected_pattern: aiPattern,
+      dominant_rgb: `${topColors[0]?.r || 0},${topColors[0]?.g || 0},${topColors[0]?.b || 0}`,
       matches_found: enriched.length,
       hint_pattern: hint_pattern || '',
       hint_material: hint_material || '',
@@ -273,9 +283,16 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
 
     res.json({
       scan: {
-        detected_colors: topColors,           // array of top 3 colors with %
-        detected_color: primaryColor,         // primary (most dominant)
-        detected_pattern: detectedPattern,
+        ai_powered: !!geminiResult,
+        description: aiDescription,
+        detected_colors: topColors,
+        ai_colors: aiColors,
+        detected_color: aiColors[0] || 'unknown',
+        detected_pattern: aiPattern,
+        style: aiStyle,
+        textile_type: aiTextileType,
+        material_guess: aiMaterial,
+        keywords: aiKeywords,
         dominant_rgb: { r: topColors[0]?.r || 128, g: topColors[0]?.g || 128, b: topColors[0]?.b || 128 },
         image_url: `/uploads/scans/${req.file.filename}`,
       },
