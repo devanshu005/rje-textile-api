@@ -5,7 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
-const { authenticateToken } = require('./middleware/auth');
+const { authenticateToken, requireUser } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,8 +17,8 @@ app.use(express.json({ limit: '10mb' }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -32,9 +32,17 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/textiles', require('./routes/textiles'));
 app.use('/api/suppliers', require('./routes/suppliers'));
 app.use('/api/scan', require('./routes/scan'));
+app.use('/api/users', require('./routes/users'));
+
+// User-protected routes (login required)
+app.use('/api/cart', requireUser, require('./routes/cart'));
+app.use('/api/orders', requireUser, require('./routes/orders'));
+
+// User profile update needs auth
+app.put('/api/users/profile', requireUser, (req, res, next) => next());
+app.get('/api/users/me', requireUser, (req, res, next) => next());
 
 // Protected routes (admin only)
-app.use('/api/auth/change-password', authenticateToken, require('./routes/auth'));
 app.use('/api/admin', authenticateToken, require('./routes/admin'));
 
 // Protected CRUD routes - textiles POST/PUT/DELETE need auth
@@ -53,6 +61,16 @@ app.use('/api/stock', authenticateToken, require('./routes/stock'));
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Secret admin access — only accessible via direct URL with key
+app.get('/api/admin-access/:key', (req, res) => {
+  const ADMIN_ACCESS_KEY = process.env.ADMIN_ACCESS_KEY || 'RJE_ADMIN_2026_SECRET';
+  if (req.params.key === ADMIN_ACCESS_KEY) {
+    res.json({ message: 'Admin access granted', login_endpoint: '/api/auth/login' });
+  } else {
+    res.status(404).json({ error: 'Not found' });
+  }
 });
 
 // Error handling

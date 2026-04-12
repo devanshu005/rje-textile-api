@@ -9,6 +9,21 @@ const adminSchema = new mongoose.Schema({
   is_active: { type: Number, default: 1 },
 }, { timestamps: true });
 
+// ─── User (Customer) ───────────────────────────────────
+const userSchema = new mongoose.Schema({
+  google_id: { type: String, unique: true, sparse: true },
+  email: { type: String, unique: true, sparse: true },
+  name: { type: String, required: true },
+  company_name: String,
+  phone: { type: String, required: true },
+  gst_number: String,
+  address: String,
+  profile_completed: { type: Boolean, default: false },
+}, { timestamps: true });
+
+userSchema.index({ phone: 1 });
+userSchema.index({ email: 1 });
+
 // ─── Textile ────────────────────────────────────────────
 const textileSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -52,13 +67,62 @@ const stockSchema = new mongoose.Schema({
   textile_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Textile', required: true },
   supplier_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
   quantity_meters: { type: Number, default: 0 },
-  min_order_meters: { type: Number, default: 1 },
+  min_order_meters: { type: Number, default: 20 },
   price_per_meter: Number,
   lead_time_days: { type: Number, default: 7 },
   is_available: { type: Number, default: 1 },
 }, { timestamps: true });
 
 stockSchema.index({ textile_id: 1, supplier_id: 1 }, { unique: true });
+
+// ─── Cart ───────────────────────────────────────────────
+const cartItemSchema = new mongoose.Schema({
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  textile_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Textile', required: true },
+  meters: { type: Number, required: true, min: 20 },
+  price_per_meter: Number,
+}, { timestamps: true });
+
+cartItemSchema.index({ user_id: 1 });
+
+// ─── Order ──────────────────────────────────────────────
+const orderSchema = new mongoose.Schema({
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  order_number: { type: String, unique: true },
+  items: [{
+    textile_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Textile' },
+    textile_name: String,
+    meters: Number,
+    price_per_meter: Number,
+    total_price: Number,
+  }],
+  total_amount: Number,
+  status: { type: String, enum: ['pending', 'accepted', 'rejected', 'delivered', 'cancelled'], default: 'pending' },
+  delivery_date: Date,
+  payment_status: { type: String, enum: ['pending', 'completed'], default: 'pending' },
+  admin_notes: String,
+  user_name: String,
+  user_company: String,
+  user_phone: String,
+  user_address: String,
+  user_gst: String,
+}, { timestamps: true });
+
+orderSchema.index({ user_id: 1 });
+orderSchema.index({ status: 1 });
+orderSchema.index({ order_number: 1 });
+
+// ─── Notification ───────────────────────────────────────
+const notificationSchema = new mongoose.Schema({
+  user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  type: { type: String, enum: ['order_placed', 'order_accepted', 'order_rejected', 'order_delivered', 'admin_new_order'], required: true },
+  title: String,
+  message: String,
+  order_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+  read: { type: Boolean, default: false },
+}, { timestamps: true });
+
+notificationSchema.index({ user_id: 1, read: 1 });
 
 // ─── Scan History ───────────────────────────────────────
 const scanHistorySchema = new mongoose.Schema({
@@ -88,9 +152,13 @@ knowledgeBaseSchema.index({ textile_type: 'text', description: 'text', identifyi
 
 module.exports = {
   Admin: mongoose.model('Admin', adminSchema),
+  User: mongoose.model('User', userSchema),
   Textile: mongoose.model('Textile', textileSchema),
   Supplier: mongoose.model('Supplier', supplierSchema),
   Stock: mongoose.model('Stock', stockSchema),
+  CartItem: mongoose.model('CartItem', cartItemSchema),
+  Order: mongoose.model('Order', orderSchema),
+  Notification: mongoose.model('Notification', notificationSchema),
   ScanHistory: mongoose.model('ScanHistory', scanHistorySchema),
   KnowledgeBase: mongoose.model('KnowledgeBase', knowledgeBaseSchema),
 };

@@ -27,22 +27,32 @@ async function analyzeWithGemini(imagePath, mimeType) {
     const imageData = fs.readFileSync(imagePath);
     const base64Image = imageData.toString('base64');
 
-    const prompt = `You are an expert textile analyst. Analyze this fabric/textile image and return a JSON object with these fields:
+    const prompt = `You are a professional textile industry expert with 20+ years of experience identifying fabrics, colors, patterns, and designs. You work for an Indian textile company.
+
+Carefully examine ONLY the fabric/textile in this image. Ignore ALL non-fabric elements (background, hands, skin, surfaces, tables, lighting artifacts, mannequins, tags).
+
+Return a JSON object:
 {
-  "description": "2-3 sentence description of the textile/fabric including style, weave, and any design elements",
-  "colors": ["color1", "color2", "color3"],
-  "pattern": "the pattern type (e.g., Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid)",
-  "style": "the style (e.g., Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven)",
-  "material_guess": "likely material (e.g., Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin)",
-  "textile_type": "the type of textile if recognizable (e.g., Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, or Generic)",
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"]
+  "description": "Detailed 2-3 sentence description of this fabric's appearance, texture, design elements, and craft technique",
+  "colors": ["primary_color", "secondary_color", "accent_color"],
+  "pattern": "ONE of: Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid, Plaid, Polka Dots, Herringbone, Woven Motif, Zari Work, Printed",
+  "style": "ONE of: Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven, Fusion, Casual, Formal",
+  "material_guess": "ONE of: Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin, Denim, Rayon, Organza, Net, Crepe, Khadi",
+  "textile_type": "If identifiable: Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, Ajrakh, Leheriya, Phulkari, Kota Doria, Maheshwari, Pochampally, or Generic",
+  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"]
 }
 
-CRITICAL INSTRUCTIONS:
-- Focus ONLY on the fabric/textile visible in the image. IGNORE any background, hands, fingers, surfaces, tables, mannequins, or non-fabric elements entirely.
-- For "colors", list ONLY the colors of the FABRIC itself (not background or surroundings). Always return at least 2-3 colors. Use simple color names like red, blue, gold, navy, maroon, green, cream, beige, pink, etc.
-- If the image shows fabric being held or placed on a surface, analyze ONLY the fabric portion.
-- Return ONLY valid JSON, no markdown, no explanation.`;
+COLOR RULES:
+- List EXACT fabric colors only. Minimum 2, maximum 5.
+- Use common names: red, maroon, navy, royal blue, gold, cream, beige, ivory, white, black, brown, olive, teal, pink, coral, mustard, burgundy, emerald, turquoise, lavender, peach, rust, silver, grey, charcoal, indigo, wine, magenta, orange, yellow, green, purple.
+- The first color MUST be the dominant/primary fabric color.
+- Do NOT list background colors, shadow colors, or lighting artifacts.
+
+PATTERN RULES:
+- Identify the ACTUAL design on the fabric surface, not the fabric shape.
+- Look for motifs, weave patterns, prints, embroidery, or dyeing techniques.
+
+Return ONLY the JSON. No markdown. No backticks. No explanation.`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,

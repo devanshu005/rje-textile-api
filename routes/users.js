@@ -1,0 +1,88 @@
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const { User } = require('../models/schemas');
+const router = express.Router();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'rje_textile_secret_key_2024';
+
+// POST /api/users/google-login — Authenticate with Google ID token info
+router.post('/google-login', async (req, res) => {
+  try {
+    const { google_id, email, name } = req.body;
+    if (!google_id || !name) return res.status(400).json({ error: 'google_id and name required' });
+
+    let user = await User.findOne({ google_id });
+    if (!user && email) user = await User.findOne({ email });
+
+    if (!user) {
+      user = await User.create({ google_id, email, name, phone: '', profile_completed: false });
+    } else {
+      if (!user.google_id) user.google_id = google_id;
+      if (email && !user.email) user.email = email;
+      await user.save();
+    }
+
+    const token = jwt.sign({ userId: user._id, type: 'user' }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user, profile_completed: user.profile_completed });
+  } catch (err) {
+    console.error('Google login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// POST /api/users/phone-login — Simple phone-based login/register
+router.post('/phone-login', async (req, res) => {
+  try {
+    const { phone, name } = req.body;
+    if (!phone || !name) return res.status(400).json({ error: 'Phone and name required' });
+
+    let user = await User.findOne({ phone });
+    if (!user) {
+      user = await User.create({ name, phone, profile_completed: false });
+    }
+
+    const token = jwt.sign({ userId: user._id, type: 'user' }, JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token, user, profile_completed: user.profile_completed });
+  } catch (err) {
+    console.error('Phone login error:', err);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// PUT /api/users/profile — Complete/update user profile
+router.put('/profile', async (req, res) => {
+  try {
+    const { name, company_name, phone, gst_number, address, email } = req.body;
+    if (!req.user?.userId) return res.status(401).json({ error: 'Login required' });
+
+    const update = {};
+    if (name) update.name = name;
+    if (company_name !== undefined) update.company_name = company_name;
+    if (phone) update.phone = phone;
+    if (gst_number !== undefined) update.gst_number = gst_number;
+    if (address !== undefined) update.address = address;
+    if (email !== undefined) update.email = email;
+    update.profile_completed = true;
+
+    const user = await User.findByIdAndUpdate(req.user.userId, update, { new: true });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user });
+  } catch (err) {
+    console.error('Profile update error:', err);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// GET /api/users/me — Get current user
+router.get('/me', async (req, res) => {
+  try {
+    if (!req.user?.userId) return res.status(401).json({ error: 'Login required' });
+    const user = await User.findById(req.user.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
+  }
+});
+
+module.exports = router;

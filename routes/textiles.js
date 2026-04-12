@@ -28,28 +28,27 @@ async function analyzeImageWithGemini(imagePath, mimeType) {
     const imageData = fs.readFileSync(imagePath);
     const base64Image = imageData.toString('base64');
 
-    const prompt = `You are an expert textile analyst. Analyze this fabric/textile image and return a JSON object with ALL these fields:
+    const prompt = `You are a professional textile industry expert with 20+ years. Examine ONLY the fabric/textile in this image. Ignore ALL non-fabric elements.
+
+Return a JSON object:
 {
-  "description": "2-3 sentence description of the textile/fabric including its visual appearance, weave, and any design elements",
-  "primary_color": "the dominant color name (e.g., red, blue, gold, navy, maroon, cream)",
-  "secondary_colors": "other visible colors comma-separated (e.g., gold, white, green)",
-  "colors": ["color1", "color2", "color3"],
-  "pattern": "the pattern type (e.g., Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid, Polka Dots, Herringbone)",
-  "material_guess": "likely material (e.g., Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin, Denim, Rayon, Blended)",
-  "weave_type": "weave type if visible (e.g., Plain Weave, Twill, Satin Weave, Dobby, Jacquard, Basket Weave)",
-  "style": "the style (e.g., Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven)",
-  "textile_type": "specific textile type if recognizable (e.g., Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, or Generic)",
-  "suggested_name": "a descriptive product name for this textile (e.g., Royal Blue Banarasi Silk Brocade)",
-  "tags": "comma-separated tags (e.g., festive, bridal, premium, casual, summer, lightweight)",
+  "description": "Detailed 2-3 sentence description of this fabric's appearance, texture, design, and craft technique",
+  "primary_color": "dominant fabric color (e.g., red, blue, gold, navy, maroon, cream)",
+  "secondary_colors": "other fabric colors comma-separated (e.g., gold, white, green)",
+  "colors": ["primary_color", "secondary_color", "accent_color"],
+  "pattern": "ONE of: Floral, Geometric, Stripes, Checks, Paisley, Abstract, Block Print, Brocade, Embroidered, Plain, Ikat, Batik, Tie-Dye, Damask, Jacquard, Solid, Polka Dots, Herringbone, Woven Motif, Zari Work, Printed",
+  "material_guess": "ONE of: Silk, Cotton, Polyester, Linen, Wool, Chiffon, Georgette, Velvet, Satin, Denim, Rayon, Organza, Net, Crepe, Khadi",
+  "weave_type": "weave type if visible (Plain Weave, Twill, Satin Weave, Dobby, Jacquard, Basket Weave, or N/A)",
+  "style": "ONE of: Traditional Indian, Modern, Ethnic, Contemporary, Vintage, Handloom, Machine-woven",
+  "textile_type": "If identifiable: Banarasi, Kanjeevaram, Chanderi, Bandhani, Kalamkari, Ikat, Patola, Tussar, Chikankari, or Generic",
+  "suggested_name": "descriptive product name (e.g., Royal Blue Banarasi Silk Brocade)",
+  "tags": "comma-separated tags (e.g., festive, bridal, premium, casual)",
   "keywords": ["keyword1", "keyword2", "keyword3", "keyword4"],
-  "origin_guess": "likely origin region if identifiable (e.g., Varanasi, Kanchipuram, Jaipur, Lucknow, or Unknown)"
+  "origin_guess": "origin region if identifiable (Varanasi, Kanchipuram, Jaipur, or Unknown)"
 }
 
-CRITICAL INSTRUCTIONS:
-- Focus ONLY on the fabric/textile visible in the image. IGNORE any background, hands, fingers, surfaces, tables, mannequins, or non-fabric elements entirely.
-- For colors, list ONLY the colors of the FABRIC itself (not background or surroundings). Always return at least 2-3 colors.
-- If the image shows fabric being held or placed on a surface, analyze ONLY the fabric portion.
-- Return ONLY valid JSON, no markdown, no explanation. Colors should be simple names.`;
+COLOR RULES: List EXACT fabric colors only (not background). Minimum 2. Use common names: red, maroon, navy, gold, cream, beige, white, black, brown, teal, pink, mustard, etc.
+Return ONLY valid JSON. No markdown. No backticks.`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
@@ -194,6 +193,20 @@ router.post('/create-with-image', upload.single('image'), async (req, res) => {
   } catch (err) {
     console.error('Create error:', err);
     res.status(500).json({ error: 'Failed to create textile' });
+  }
+});
+
+// GET /api/textiles/materials — Material categories with counts
+router.get('/materials', async (req, res) => {
+  try {
+    const result = await Textile.aggregate([
+      { $group: { _id: '$material', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+    const materials = result.map(r => ({ name: r._id, count: r.count })).filter(m => m.name);
+    res.json({ materials });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
   }
 });
 

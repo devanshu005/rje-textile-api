@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../database');
-const { Admin, Textile, Supplier, Stock, ScanHistory, KnowledgeBase } = require('../models/schemas');
+const { Admin, Textile, Supplier, Stock, ScanHistory, KnowledgeBase, Order, Notification, User } = require('../models/schemas');
 
 const router = express.Router();
 
@@ -48,24 +48,60 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-// GET /api/admin/textiles
+// GET /api/admin/textiles — with search/filter
 router.get('/textiles', async (req, res) => {
   try {
-    const textiles = await Textile.find().sort({ created_at: -1 }).lean();
+    const { search, color, pattern, material } = req.query;
+    const filter = {};
+    if (color) filter.primary_color = { $regex: color, $options: 'i' };
+    if (pattern) filter.pattern = { $regex: pattern, $options: 'i' };
+    if (material) filter.material = { $regex: material, $options: 'i' };
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $regex: search, $options: 'i' } },
+      ];
+    }
+    const textiles = await Textile.find(filter).sort({ createdAt: -1 }).lean();
     const allStock = await Stock.find({ is_available: 1 }).lean();
-    const enriched = textiles.map(t => ({
-      ...t, id: t._id,
-      total_stock: allStock.filter(s => String(s.textile_id) === String(t._id)).reduce((sum, s) => sum + (s.quantity_meters || 0), 0),
-    }));
+    const enriched = textiles.map(t => {
+      const textileStock = allStock.filter(s => String(s.textile_id) === String(t._id));
+      const supplierIds = [...new Set(textileStock.map(s => String(s.supplier_id)))];
+      return {
+        ...t, id: t._id,
+        total_stock: textileStock.reduce((sum, s) => sum + (s.quantity_meters || 0), 0),
+        supplier_ids: supplierIds,
+        supplier_count: supplierIds.length,
+      };
+    });
     res.json(enriched);
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
-// GET /api/admin/suppliers
+// GET /api/admin/suppliers — with search
 router.get('/suppliers', async (req, res) => {
   try {
-    const suppliers = await Supplier.find().sort({ name: 1 }).lean();
-    res.json(suppliers.map(s => ({ ...s, id: s._id })));
+    const { search } = req.query;
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { city: { $regex: search, $options: 'i' } },
+        { contact_person: { $regex: search, $options: 'i' } },
+      ];
+    }
+    const suppliers = await Supplier.find(filter).sort({ name: 1 }).lean();
+    const allStock = await Stock.find({ is_available: 1 }).lean();
+    const enriched = suppliers.map(s => {
+      const supplierStock = allStock.filter(st => String(st.supplier_id) === String(s._id));
+      return {
+        ...s, id: s._id,
+        textile_ids: [...new Set(supplierStock.map(st => String(st.textile_id)))],
+        textile_count: new Set(supplierStock.map(st => String(st.textile_id))).size,
+      };
+    });
+    res.json(enriched);
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
@@ -147,6 +183,161 @@ router.delete('/knowledge-base/:id', async (req, res) => {
     const result = await db.delete('knowledge_base', req.params.id);
     if (!result) return res.status(404).json({ error: 'Not found' });
     res.json({ message: 'Deleted' });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// ORDER MANAGEMENT
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/admin/orders — All orders with filters
+router.get('/orders', async (req, res) => {
+  try {
+    const { status, search } = req.query;
+    const filter = {};
+    if (status && status !== 'all') filter.status = status;
+    if (search) {
+      filter.$or = [
+        { order_number: { $regex: search, $options: 'i' } },
+        { user_name: { $regex: search, $options: 'i' } },
+        { user_company: { $regex: search, $options: 'i' } },
+        { user_phone: { $regex: search, $options: 'i' } },
+      ];
+    }
+    const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ orders: orders.map(o => ({ ...o, id: o._id })) });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/orders/:id/accept — Accept order
+router.put('/orders/:id/accept', async (req, res) => {
+  try {
+    const { delivery_date, admin_notes } = req.body;
+    const order = await Order.findByIdAndUpdate(req.params.id, {
+      status: 'accepted',
+      delivery_date: delivery_date ? new Date(delivery_date) : null,
+      admin_notes: admin_notes || '',
+    }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Notify user
+    const deliveryMsg = delivery_date ? ` Expected delivery: ${new Date(delivery_date).toLocaleDateString('en-IN')}.` : '';
+    await Notification.create({
+      user_id: order.user_id,
+      type: 'order_accepted',
+      title: 'Order Confirmed!',
+      message: `Your order ${order.order_number} has been accepted.${deliveryMsg}`,
+      order_id: order._id,
+    });
+
+    res.json({ order });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/orders/:id/reject — Reject order
+router.put('/orders/:id/reject', async (req, res) => {
+  try {
+    const { admin_notes } = req.body;
+    const order = await Order.findByIdAndUpdate(req.params.id, {
+      status: 'rejected',
+      admin_notes: admin_notes || '',
+    }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    await Notification.create({
+      user_id: order.user_id,
+      type: 'order_rejected',
+      title: 'Order Not Accepted',
+      message: `Your order ${order.order_number} could not be processed. ${admin_notes || ''}`,
+      order_id: order._id,
+    });
+
+    res.json({ order });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/orders/:id/deliver — Mark as delivered
+router.put('/orders/:id/deliver', async (req, res) => {
+  try {
+    const order = await Order.findByIdAndUpdate(req.params.id, { status: 'delivered' }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    await Notification.create({
+      user_id: order.user_id,
+      type: 'order_delivered',
+      title: 'Order Delivered',
+      message: `Your order ${order.order_number} has been delivered.`,
+      order_id: order._id,
+    });
+
+    res.json({ order });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/orders/:id/payment — Mark payment complete
+router.put('/orders/:id/payment', async (req, res) => {
+  try {
+    const order = await Order.findByIdAndUpdate(req.params.id, { payment_status: 'completed' }, { new: true });
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+    res.json({ order });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// GET /api/admin/notifications — Admin notifications
+router.get('/notifications', async (req, res) => {
+  try {
+    const notifications = await Notification.find({ type: 'admin_new_order' }).sort({ createdAt: -1 }).limit(50).lean();
+    const unread = await Notification.countDocuments({ type: 'admin_new_order', read: false });
+    res.json({ notifications: notifications.map(n => ({ ...n, id: n._id })), unread });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/notifications/read-all
+router.put('/notifications/read-all', async (req, res) => {
+  try {
+    await Notification.updateMany({ type: 'admin_new_order', read: false }, { read: true });
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// GET /api/admin/users — All registered users
+router.get('/users', async (req, res) => {
+  try {
+    const users = await User.find().sort({ createdAt: -1 }).lean();
+    res.json({ users: users.map(u => ({ ...u, id: u._id })) });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/textiles/:id/suppliers — Link textile to suppliers
+router.put('/textiles/:id/suppliers', async (req, res) => {
+  try {
+    const { supplier_ids } = req.body;
+    if (!Array.isArray(supplier_ids)) return res.status(400).json({ error: 'supplier_ids array required' });
+    const textile = await Textile.findById(req.params.id);
+    if (!textile) return res.status(404).json({ error: 'Textile not found' });
+
+    // Remove old stock links not in new list
+    const existing = await Stock.find({ textile_id: req.params.id }).lean();
+    for (const s of existing) {
+      if (!supplier_ids.includes(String(s.supplier_id))) {
+        await Stock.findByIdAndDelete(s._id);
+      }
+    }
+    // Add new links
+    for (const sid of supplier_ids) {
+      const exists = await Stock.findOne({ textile_id: req.params.id, supplier_id: sid });
+      if (!exists) {
+        await Stock.create({
+          textile_id: req.params.id,
+          supplier_id: sid,
+          quantity_meters: 0,
+          min_order_meters: 20,
+          price_per_meter: textile.price_per_meter || 0,
+          is_available: 1,
+        });
+      }
+    }
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
