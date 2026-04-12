@@ -308,6 +308,34 @@ router.get('/users', async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Failed' }); }
 });
 
+// PUT /api/admin/users/:id/verify — Mark user as verified (locks business fields)
+router.put('/users/:id/verify', async (req, res) => {
+  try {
+    const admin = await Admin.findOne({ is_active: 1 });
+    const verifiedBy = admin ? admin.username : 'admin';
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { is_verified: true, verified_at: new Date(), verified_by: verifiedBy },
+      { new: true }
+    );
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user, message: 'User verified successfully' });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
+// PUT /api/admin/users/:id/unverify — Remove verification
+router.put('/users/:id/unverify', async (req, res) => {
+  try {
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { is_verified: false, verified_at: null, verified_by: null },
+      { new: true }
+    );
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({ user, message: 'Verification removed' });
+  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+});
+
 // PUT /api/admin/textiles/:id/suppliers — Link textile to suppliers
 router.put('/textiles/:id/suppliers', async (req, res) => {
   try {

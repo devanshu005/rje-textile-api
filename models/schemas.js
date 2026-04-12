@@ -19,6 +19,9 @@ const userSchema = new mongoose.Schema({
   gst_number: String,
   address: String,
   profile_completed: { type: Boolean, default: false },
+  is_verified: { type: Boolean, default: false },
+  verified_at: Date,
+  verified_by: String,
 }, { timestamps: true });
 
 userSchema.index({ phone: 1 });
