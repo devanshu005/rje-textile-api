@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../database');
 const { Textile, Stock, Supplier, ScanHistory, KnowledgeBase } = require('../models/schemas');
+const { analyzeWithVision } = require('../utils/googleVision');
 
 const router = express.Router();
 
@@ -229,16 +230,22 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
     const mimeType = req.file.mimetype || 'image/jpeg';
     const { hint_pattern, hint_material } = req.body;
 
-    // Run Gemini AI + color extraction in parallel
-    const [geminiResult, topColors] = await Promise.all([
+    // Run Gemini AI + Google Vision + color extraction in parallel
+    const [geminiResult, visionResult, topColors] = await Promise.all([
       analyzeWithGemini(req.file.path, mimeType),
+      analyzeWithVision(req.file.path),
       extractTopColors(req.file.path, 3),
     ]);
 
-    // Use Gemini results if available, else fall back to pixel analysis
-    const aiColors = geminiResult?.colors || topColors.map(c => c.name);
+    // Merge Vision labels into keywords for better matching
+    const visionLabels = (visionResult?.labels || []).map(l => l.name.toLowerCase());
+    const visionWebEntities = (visionResult?.webEntities || []).map(e => e.name);
+    const visionColorNames = visionResult?.colorNames || [];
+
+    // Use Gemini results first, fall back to Vision, then pixel analysis
+    const aiColors = geminiResult?.colors || (visionColorNames.length > 0 ? visionColorNames : topColors.map(c => c.name));
     const aiPattern = geminiResult?.pattern || 'Unknown';
-    const aiKeywords = geminiResult?.keywords || [];
+    const aiKeywords = [...new Set([...(geminiResult?.keywords || []), ...visionLabels])];
     const aiMaterial = geminiResult?.material_guess || null;
     const aiDescription = geminiResult?.description || null;
     const aiStyle = geminiResult?.style || null;
@@ -315,8 +322,9 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
     res.json({
       scan: {
         ai_powered: !!geminiResult,
+        vision_powered: !!visionResult,
         description: aiDescription,
-        detected_colors: topColors,
+        detected_colors: visionResult?.colors || topColors,
         ai_colors: aiColors,
         detected_color: aiColors[0] || 'unknown',
         detected_pattern: aiPattern,
@@ -324,7 +332,11 @@ router.post('/analyze', upload.single('image'), async (req, res) => {
         textile_type: aiTextileType,
         material_guess: aiMaterial,
         keywords: aiKeywords,
-        dominant_rgb: { r: topColors[0]?.r || 128, g: topColors[0]?.g || 128, b: topColors[0]?.b || 128 },
+        vision_labels: visionResult?.labels || [],
+        vision_web: visionWebEntities,
+        dominant_rgb: visionResult?.colors?.[0]
+          ? { r: visionResult.colors[0].r, g: visionResult.colors[0].g, b: visionResult.colors[0].b }
+          : { r: topColors[0]?.r || 128, g: topColors[0]?.g || 128, b: topColors[0]?.b || 128 },
         image_url: `/uploads/scans/${req.file.filename}`,
       },
       matches: enriched,

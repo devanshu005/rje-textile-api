@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const db = require('../database');
 const { Textile, Stock, KnowledgeBase } = require('../models/schemas');
+const { analyzeWithVision } = require('../utils/googleVision');
 
 const router = express.Router();
 
@@ -110,22 +111,29 @@ async function basicDetect(imagePath) {
   } catch { return { primary_color: 'white', pattern: 'Unknown', dominant_rgb: { r: 128, g: 128, b: 128 } }; }
 }
 
-// POST /api/textiles/analyze-image — now uses Gemini AI
+// POST /api/textiles/analyze-image — uses Gemini AI + Google Vision
 router.post('/analyze-image', upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
   try {
     const mimeType = req.file.mimetype || 'image/jpeg';
 
-    // Run Gemini + basic detection in parallel
-    const [gemini, basic] = await Promise.all([
+    // Run Gemini + Vision + basic detection in parallel for best results
+    const [gemini, vision, basic] = await Promise.all([
       analyzeImageWithGemini(req.file.path, mimeType),
+      analyzeWithVision(req.file.path),
       basicDetect(req.file.path),
     ]);
 
+    // Merge Vision labels into keywords
+    const visionLabels = (vision?.labels || []).map(l => l.name.toLowerCase());
+    const visionWebEntities = (vision?.webEntities || []).map(e => e.name);
+    const visionColorNames = vision?.colorNames || [];
+
     const detected = {
       ai_powered: !!gemini,
-      primary_color: gemini?.primary_color || basic.primary_color,
-      secondary_colors: gemini?.secondary_colors || '',
+      vision_powered: !!vision,
+      primary_color: gemini?.primary_color || vision?.primaryColor || basic.primary_color,
+      secondary_colors: gemini?.secondary_colors || (visionColorNames.length > 1 ? visionColorNames.slice(1).join(', ') : ''),
       pattern: gemini?.pattern || basic.pattern,
       material_guess: gemini?.material_guess || null,
       weave_type: gemini?.weave_type || null,
@@ -134,10 +142,13 @@ router.post('/analyze-image', upload.single('image'), async (req, res) => {
       description: gemini?.description || null,
       suggested_name: gemini?.suggested_name || null,
       tags: gemini?.tags || '',
-      keywords: gemini?.keywords || [],
+      keywords: [...new Set([...(gemini?.keywords || []), ...visionLabels])],
       origin_guess: gemini?.origin_guess || null,
-      colors: gemini?.colors || [basic.primary_color],
-      dominant_rgb: basic.dominant_rgb,
+      colors: gemini?.colors || visionColorNames.length > 0 ? visionColorNames : [basic.primary_color],
+      dominant_rgb: vision?.colors?.[0] ? { r: vision.colors[0].r, g: vision.colors[0].g, b: vision.colors[0].b } : basic.dominant_rgb,
+      vision_colors: vision?.colors || [],
+      vision_labels: vision?.labels || [],
+      vision_web: visionWebEntities,
     };
 
     // Get recommendations from existing DB
